@@ -6,31 +6,18 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { Trophy, Users, ListOrdered, Brackets } from 'lucide-react'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Trophy, Users, ListOrdered, Brackets } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 type Player = {
-  id: string
+  id: string // "p1"..."pN"
   name: string
 }
 
 type Match = {
-  id: string
+  id: string // "m1"..."mK"
   homeId: string
   awayId: string
   homeScore: number | null
@@ -52,26 +39,54 @@ type StandingRow = {
 
 type KnockoutFormat = "semi-final" | "final-only"
 
-function makePlayers(): Player[] {
-  return [
-    { id: "p1", name: "Pemain 1" },
-    { id: "p2", name: "Pemain 2" },
-    { id: "p3", name: "Pemain 3" },
-    { id: "p4", name: "Pemain 4" },
-  ]
+const STORAGE_KEY = "efootball:v2" // versi baru untuk struktur dinamis
+
+type PersistedState = {
+  players: Player[]
+  groupMatches: Match[]
+  koFormat: KnockoutFormat
+  sf1: { homeScore: number | null; awayScore: number | null }
+  sf2: { homeScore: number | null; awayScore: number | null }
+  finalMatch: { homeScore: number | null; awayScore: number | null }
 }
 
-// Jadwal round-robin untuk 4 pemain (6 pertandingan)
+function loadSaved(): PersistedState | null {
+  if (typeof window === "undefined") return null
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return null
+    const data = JSON.parse(raw)
+    if (!data || !Array.isArray(data.players) || !Array.isArray(data.groupMatches)) return null
+    const ko: KnockoutFormat = data.koFormat === "final-only" ? "final-only" : "semi-final"
+    return {
+      players: data.players,
+      groupMatches: data.groupMatches,
+      koFormat: ko,
+      sf1: data.sf1 ?? { homeScore: null, awayScore: null },
+      sf2: data.sf2 ?? { homeScore: null, awayScore: null },
+      finalMatch: data.finalMatch ?? { homeScore: null, awayScore: null },
+    }
+  } catch {
+    return null
+  }
+}
+
+function makePlayers(count: number): Player[] {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `p${i + 1}`,
+    name: `Pemain ${i + 1}`,
+  }))
+}
+
+// Buat jadwal round-robin untuk N pemain: semua pasangan unik (i < j)
 function makeGroupMatches(players: Player[]): Match[] {
   const ids = players.map((p) => p.id)
-  const pairs: [string, string][] = [
-    [ids[0], ids[1]],
-    [ids[2], ids[3]],
-    [ids[0], ids[2]],
-    [ids[1], ids[3]],
-    [ids[0], ids[3]],
-    [ids[1], ids[2]],
-  ]
+  const pairs: [string, string][] = []
+  for (let i = 0; i < ids.length; i++) {
+    for (let j = i + 1; j < ids.length; j++) {
+      pairs.push([ids[i], ids[j]])
+    }
+  }
   return pairs.map((pair, idx) => ({
     id: `m${idx + 1}`,
     homeId: pair[0],
@@ -100,8 +115,9 @@ function computeStandings(players: Player[], matches: Match[]): StandingRow[] {
 
   for (const m of matches) {
     if (m.homeScore == null || m.awayScore == null) continue
-    const home = map.get(m.homeId)!
-    const away = map.get(m.awayId)!
+    const home = map.get(m.homeId)
+    const away = map.get(m.awayId)
+    if (!home || !away) continue
     home.played += 1
     away.played += 1
     home.gf += m.homeScore
@@ -117,7 +133,6 @@ function computeStandings(players: Player[], matches: Match[]): StandingRow[] {
       away.pts += 3
       home.loss += 1
     } else {
-      // seri
       home.draw += 1
       away.draw += 1
       home.pts += 1
@@ -125,18 +140,13 @@ function computeStandings(players: Player[], matches: Match[]): StandingRow[] {
     }
   }
 
-  const table = Array.from(map.values()).map((r) => ({
-    ...r,
-    gd: r.gf - r.ga,
-  }))
-
+  const table = Array.from(map.values()).map((r) => ({ ...r, gd: r.gf - r.ga }))
   table.sort((a, b) => {
     if (b.pts !== a.pts) return b.pts - a.pts
     if (b.gd !== a.gd) return b.gd - a.gd
     if (b.gf !== a.gf) return b.gf - a.gf
     return a.name.localeCompare(b.name)
   })
-
   return table
 }
 
@@ -152,41 +162,38 @@ function safeParseScore(v: string): number | null {
 }
 
 function useTournament() {
-  const [players, setPlayers] = useState<Player[]>(() => makePlayers())
-  const [groupMatches, setGroupMatches] = useState<Match[]>(() =>
-    makeGroupMatches(makePlayers()),
+  const saved = loadSaved()
+  const initialPlayers = saved?.players ?? makePlayers(4)
+
+  const [players, setPlayers] = useState<Player[]>(initialPlayers)
+  const [groupMatches, setGroupMatches] = useState<Match[]>(
+    () => saved?.groupMatches ?? makeGroupMatches(initialPlayers),
   )
-  const [koFormat, setKoFormat] = useState<KnockoutFormat>("semi-final")
+  const [koFormat, setKoFormat] = useState<KnockoutFormat>(() => saved?.koFormat ?? "semi-final")
 
   // Knockout states
-  // Semi-final: SF1 (1 vs 4), SF2 (2 vs 3)
-  const [sf1, setSf1] = useState<{ homeScore: number | null; awayScore: number | null }>({
-    homeScore: null,
-    awayScore: null,
-  })
-  const [sf2, setSf2] = useState<{ homeScore: number | null; awayScore: number | null }>({
-    homeScore: null,
-    awayScore: null,
-  })
-  // Final: depends on format
-  const [finalMatch, setFinalMatch] = useState<{ homeScore: number | null; awayScore: number | null }>({
-    homeScore: null,
-    awayScore: null,
-  })
-
-  // Re-generate schedule if player list length changes (not expected here)
-  useEffect(() => {
-    setGroupMatches((prev) => {
-      if (prev.length === 6) return prev
-      return makeGroupMatches(players)
-    })
-  }, [players.length]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const standings = useMemo(
-    () => computeStandings(players, groupMatches),
-    [players, groupMatches],
+  const [sf1, setSf1] = useState<{ homeScore: number | null; awayScore: number | null }>(
+    () => saved?.sf1 ?? { homeScore: null, awayScore: null },
+  )
+  const [sf2, setSf2] = useState<{ homeScore: number | null; awayScore: number | null }>(
+    () => saved?.sf2 ?? { homeScore: null, awayScore: null },
+  )
+  const [finalMatch, setFinalMatch] = useState<{ homeScore: number | null; awayScore: number | null }>(
+    () => saved?.finalMatch ?? { homeScore: null, awayScore: null },
   )
 
+  // Jika jumlah pemain < 4 dan format semi-final, paksa ke final-only
+  useEffect(() => {
+    if (players.length < 4 && koFormat === "semi-final") {
+      setKoFormat("final-only")
+      setSf1({ homeScore: null, awayScore: null })
+      setSf2({ homeScore: null, awayScore: null })
+      setFinalMatch({ homeScore: null, awayScore: null })
+    }
+  }, [players.length, koFormat])
+
+  // Klasemen dan status
+  const standings = useMemo(() => computeStandings(players, groupMatches), [players, groupMatches])
   const groupDone = allGroupMatchesCompleted(groupMatches)
 
   // Seeds
@@ -200,12 +207,12 @@ function useTournament() {
     return players.find((p) => p.id === id)?.name ?? "-"
   }
 
-  // Winners based on SF or directly from standings
+  // Pemenang SF untuk format semi-final
   const sf1WinnerId = useMemo(() => {
     if (!groupDone || koFormat !== "semi-final") return undefined
     if (!seed1 || !seed4) return undefined
     if (sf1.homeScore == null || sf1.awayScore == null) return undefined
-    if (sf1.homeScore === sf1.awayScore) return undefined // no draw allowed
+    if (sf1.homeScore === sf1.awayScore) return undefined
     return sf1.homeScore > sf1.awayScore ? seed1 : seed4
   }, [groupDone, koFormat, seed1, seed4, sf1])
 
@@ -255,8 +262,34 @@ function useTournament() {
     )
   }
 
+  function changePlayerCount(newCount: number) {
+    // Batasi 2–16
+    const count = Math.max(2, Math.min(16, newCount))
+    setPlayers((prev) => {
+      const nextPlayers = Array.from({ length: count }, (_, i) => {
+        const old = prev[i]
+        return {
+          id: `p${i + 1}`,
+          name: old?.name ?? `Pemain ${i + 1}`,
+        }
+      })
+      setGroupMatches(makeGroupMatches(nextPlayers))
+      // reset KO + sesuaikan format
+      if (count < 4) {
+        setKoFormat("final-only")
+      }
+      setSf1({ homeScore: null, awayScore: null })
+      setSf2({ homeScore: null, awayScore: null })
+      setFinalMatch({ homeScore: null, awayScore: null })
+      return nextPlayers
+    })
+  }
+
   function resetTournament() {
-    const freshPlayers = makePlayers()
+    try {
+      localStorage.removeItem(STORAGE_KEY)
+    } catch {}
+    const freshPlayers = makePlayers(4)
     setPlayers(freshPlayers)
     setGroupMatches(makeGroupMatches(freshPlayers))
     setKoFormat("semi-final")
@@ -264,6 +297,23 @@ function useTournament() {
     setSf2({ homeScore: null, awayScore: null })
     setFinalMatch({ homeScore: null, awayScore: null })
   }
+
+  // Persist
+  useEffect(() => {
+    const data: PersistedState = {
+      players,
+      groupMatches,
+      koFormat,
+      sf1,
+      sf2,
+      finalMatch,
+    }
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+    } catch {
+      // abaikan
+    }
+  }, [players, groupMatches, koFormat, sf1, sf2, finalMatch])
 
   return {
     players,
@@ -288,12 +338,14 @@ function useTournament() {
     championId,
     updatePlayerName,
     updateGroupScore,
+    changePlayerCount,
     resetTournament,
   }
 }
 
 export default function Page() {
   const t = useTournament()
+  const playerCounts = Array.from({ length: 15 }, (_, i) => `${i + 2}`) // "2"..."16"
 
   return (
     <main className="min-h-[100dvh] bg-muted/20">
@@ -301,7 +353,7 @@ export default function Page() {
         <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
             <Trophy className="size-6 text-yellow-600" aria-hidden="true" />
-            <h1 className="text-2xl font-semibold tracking-tight">Turnamen eFootball - 4 Pemain</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Turnamen eFootball</h1>
           </div>
           <div className="flex items-center gap-2">
             <Badge variant="secondary" className="rounded-full px-3 py-1">
@@ -316,10 +368,35 @@ export default function Page() {
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           {/* Babak Grup */}
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
+            <CardHeader className="flex flex-col gap-3">
               <div className="flex items-center gap-2">
                 <Users className="size-5 text-emerald-600" aria-hidden="true" />
-                <CardTitle>{"Babak Grup (Round-robin 4 Pemain)"}</CardTitle>
+                <CardTitle>{`Babak Grup (Round-robin ${t.players.length} Pemain)`}</CardTitle>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="player-count" className="text-sm text-muted-foreground">
+                    {"Jumlah Pemain"}
+                  </Label>
+                  <Select
+                    value={`${t.players.length}`}
+                    onValueChange={(val) => t.changePlayerCount(Number.parseInt(val))}
+                  >
+                    <SelectTrigger id="player-count" className="w-[160px]">
+                      <SelectValue placeholder="Pilih jumlah pemain" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {playerCounts.map((val) => (
+                        <SelectItem key={val} value={val}>
+                          {val}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {"Mengubah jumlah pemain akan mengatur ulang jadwal & skor knockout."}
+                </p>
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
@@ -434,12 +511,7 @@ export default function Page() {
                         <TableRow key={row.playerId}>
                           <TableCell className="font-semibold">{i + 1}</TableCell>
                           <TableCell className="font-medium">
-                            <span
-                              className={cn(
-                                i === 0 && "text-emerald-700",
-                                i === 1 && "text-emerald-600",
-                              )}
-                            >
+                            <span className={cn(i === 0 && "text-emerald-700", i === 1 && "text-emerald-600")}>
                               {row.name}
                             </span>
                           </TableCell>
@@ -476,25 +548,28 @@ export default function Page() {
                   <Select
                     value={t.koFormat}
                     onValueChange={(v: KnockoutFormat) => {
-                      t.setKoFormat(v)
-                      // Clear KO scores when switching format
-                      if (v === "semi-final") {
-                        t.setSf1({ homeScore: null, awayScore: null })
-                        t.setSf2({ homeScore: null, awayScore: null })
-                        t.setFinalMatch({ homeScore: null, awayScore: null })
-                      } else {
-                        t.setSf1({ homeScore: null, awayScore: null })
-                        t.setSf2({ homeScore: null, awayScore: null })
-                        t.setFinalMatch({ homeScore: null, awayScore: null })
+                      // Ubah format + reset skor KO
+                      if (v === "semi-final" && t.players.length < 4) {
+                        // tidak boleh, abaikan
+                        return
                       }
+                      // set dan reset skor
+                      // (tetap reset untuk menjaga konsistensi)
+                      // semi-final perlu dua SF, final-only langsung final
+                      t.setKoFormat(v)
+                      t.setSf1({ homeScore: null, awayScore: null })
+                      t.setSf2({ homeScore: null, awayScore: null })
+                      t.setFinalMatch({ homeScore: null, awayScore: null })
                     }}
                   >
-                    <SelectTrigger id="ko-format" className="w-[180px]">
+                    <SelectTrigger id="ko-format" className="w-[200px]">
                       <SelectValue placeholder="Pilih format knockout" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="semi-final">{"Semi-final + Final"}</SelectItem>
                       <SelectItem value="final-only">{"Langsung Final (1 vs 2)"}</SelectItem>
+                      <SelectItem value="semi-final" disabled={t.players.length < 4}>
+                        {"Semi-final + Final (1 vs 4, 2 vs 3)"}
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -506,13 +581,12 @@ export default function Page() {
                   </div>
                 ) : (
                   <>
-                    {t.koFormat === "semi-final" && (
+                    {t.koFormat === "semi-final" && t.players.length >= 4 && (
                       <section aria-labelledby="semi-final" className="space-y-4">
                         <h3 id="semi-final" className="text-sm font-medium text-muted-foreground">
                           {"Semi-final"}
                         </h3>
                         <div className="grid grid-cols-1 gap-3">
-                          {/* SF1: 1 vs 4 */}
                           <MatchRow
                             code="SF1"
                             homeName={t.playerNameById(t.seed1)}
@@ -524,7 +598,6 @@ export default function Page() {
                             disabled={!t.seed1 || !t.seed4}
                             note={"Tidak boleh seri pada babak knockout."}
                           />
-                          {/* SF2: 2 vs 3 */}
                           <MatchRow
                             code="SF2"
                             homeName={t.playerNameById(t.seed2)}
@@ -579,8 +652,7 @@ function MatchRow(props: {
   disabled?: boolean
   note?: string
 }) {
-  const { code, homeName, awayName, homeScore, awayScore, onHomeChange, onAwayChange, disabled, note } =
-    props
+  const { code, homeName, awayName, homeScore, awayScore, onHomeChange, onAwayChange, disabled, note } = props
   return (
     <div className={cn("rounded-md border p-3", disabled && "opacity-60")}>
       <div className="flex items-center gap-3">
@@ -615,11 +687,7 @@ function MatchRow(props: {
           <div className="flex-1 text-right font-medium">{awayName}</div>
         </div>
       </div>
-      {note ? (
-        <p className="mt-2 text-xs text-muted-foreground">
-          {note}
-        </p>
-      ) : null}
+      {note ? <p className="mt-2 text-xs text-muted-foreground">{note}</p> : null}
     </div>
   )
 }

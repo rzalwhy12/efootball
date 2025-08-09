@@ -78,22 +78,212 @@ function makePlayers(count: number): Player[] {
   }))
 }
 
-// Buat jadwal round-robin untuk N pemain: semua pasangan unik (i < j)
+// Ganti fungsi makeGroupMatches dengan algoritma yang benar-benar menyeimbangkan home/away untuk semua pemain:
+
 function makeGroupMatches(players: Player[]): Match[] {
-  const ids = players.map((p) => p.id)
-  const pairs: [string, string][] = []
-  for (let i = 0; i < ids.length; i++) {
-    for (let j = i + 1; j < ids.length; j++) {
-      pairs.push([ids[i], ids[j]])
+  const n = players.length
+  if (n < 2) return []
+
+  const matches: Match[] = []
+  let matchId = 1
+
+  // Untuk keseimbangan yang sempurna, kita gunakan pendekatan berbeda
+  // Setiap pemain bermain (n-1) pertandingan
+  // Target: setiap pemain jadi tuan rumah floor((n-1)/2) atau ceil((n-1)/2) kali
+
+  const playerIds = players.map((p) => p.id)
+  const totalGamesPerPlayer = n - 1
+  const targetHomeGames = Math.floor(totalGamesPerPlayer / 2)
+  const extraHomeGames = totalGamesPerPlayer % 2 // 1 jika ganjil, 0 jika genap
+
+  // Tentukan berapa pemain yang perlu 1 home game tambahan
+  const playersNeedingExtra = (extraHomeGames * n) / 2
+
+  // Assign target home games untuk setiap pemain
+  const playerHomeTargets = new Map<string, number>()
+  playerIds.forEach((id, index) => {
+    const needsExtra = index < playersNeedingExtra
+    playerHomeTargets.set(id, targetHomeGames + (needsExtra ? 1 : 0))
+  })
+
+  // Track actual home games
+  const homeCount = new Map<string, number>()
+  playerIds.forEach((id) => homeCount.set(id, 0))
+
+  // Buat semua pasangan yang mungkin
+  const allPairs: [string, string][] = []
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      allPairs.push([playerIds[i], playerIds[j]])
     }
   }
-  return pairs.map((pair, idx) => ({
-    id: `m${idx + 1}`,
-    homeId: pair[0],
-    awayId: pair[1],
-    homeScore: null,
-    awayScore: null,
-  }))
+
+  // Untuk setiap pasangan, tentukan siapa yang jadi tuan rumah
+  // Gunakan algoritma yang lebih fair
+  const finalMatches: [string, string][] = []
+
+  // Sort pairs untuk memastikan distribusi yang adil
+  allPairs.sort(() => Math.random() - 0.5) // Randomize order
+
+  for (const [p1, p2] of allPairs) {
+    const p1HomeCount = homeCount.get(p1)!
+    const p2HomeCount = homeCount.get(p2)!
+    const p1Target = playerHomeTargets.get(p1)!
+    const p2Target = playerHomeTargets.get(p2)!
+
+    // Hitung berapa banyak lagi masing-masing pemain perlu jadi tuan rumah
+    const p1NeedsHome = p1Target - p1HomeCount
+    const p2NeedsHome = p2Target - p2HomeCount
+
+    if (p1NeedsHome > p2NeedsHome) {
+      // P1 lebih perlu jadi tuan rumah
+      finalMatches.push([p1, p2])
+      homeCount.set(p1, p1HomeCount + 1)
+    } else if (p2NeedsHome > p1NeedsHome) {
+      // P2 lebih perlu jadi tuan rumah
+      finalMatches.push([p2, p1])
+      homeCount.set(p2, p2HomeCount + 1)
+    } else {
+      // Sama-sama perlu, pilih secara bergantian berdasarkan index
+      const p1Index = playerIds.indexOf(p1)
+      const p2Index = playerIds.indexOf(p2)
+      const pairIndex = allPairs.findIndex(([a, b]) => (a === p1 && b === p2) || (a === p2 && b === p1))
+
+      if ((pairIndex + p1Index + p2Index) % 2 === 0) {
+        finalMatches.push([p1, p2])
+        homeCount.set(p1, p1HomeCount + 1)
+      } else {
+        finalMatches.push([p2, p1])
+        homeCount.set(p2, p2HomeCount + 1)
+      }
+    }
+  }
+
+  // Sekarang susun matches ke dalam rounds untuk menghindari back-to-back
+  if (n % 2 === 0) {
+    // Jumlah pemain genap: gunakan circle method
+    const rounds = n - 1
+    const matchesPerRound = n / 2
+
+    // Buat mapping dari pasangan ke home/away assignment
+    const pairToHomeAway = new Map<string, [string, string]>()
+    for (const [home, away] of finalMatches) {
+      const key = [home, away].sort().join("-")
+      pairToHomeAway.set(key, [home, away])
+    }
+
+    // Circle method untuk round-robin
+    const circle = [...playerIds]
+    const fixed = circle[0]
+    const rotating = circle.slice(1)
+
+    for (let round = 0; round < rounds; round++) {
+      // Match 1: fixed vs rotating[0]
+      const opponent = rotating[0]
+      const key = [fixed, opponent].sort().join("-")
+      const [home, away] = pairToHomeAway.get(key)!
+      matches.push({
+        id: `m${matchId++}`,
+        homeId: home,
+        awayId: away,
+        homeScore: null,
+        awayScore: null,
+      })
+
+      // Matches sisanya: pair dari ujung-ujung
+      for (let i = 1; i < matchesPerRound; i++) {
+        const leftIdx = i
+        const rightIdx = rotating.length - i
+        if (leftIdx < rightIdx) {
+          const left = rotating[leftIdx]
+          const right = rotating[rightIdx]
+          const key = [left, right].sort().join("-")
+          const [home, away] = pairToHomeAway.get(key)!
+          matches.push({
+            id: `m${matchId++}`,
+            homeId: home,
+            awayId: away,
+            homeScore: null,
+            awayScore: null,
+          })
+        }
+      }
+
+      // Rotasi
+      if (rotating.length > 1) {
+        const last = rotating.pop()!
+        rotating.unshift(last)
+      }
+    }
+  } else {
+    // Jumlah pemain ganjil: setiap round ada yang istirahat
+    const rounds = n
+    const matchesPerRound = Math.floor(n / 2)
+
+    // Buat mapping dari pasangan ke home/away assignment
+    const pairToHomeAway = new Map<string, [string, string]>()
+    for (const [home, away] of finalMatches) {
+      const key = [home, away].sort().join("-")
+      pairToHomeAway.set(key, [home, away])
+    }
+
+    for (let round = 0; round < rounds; round++) {
+      const roundPlayers = [...playerIds]
+
+      // Rotasi untuk round ini
+      for (let i = 0; i < round; i++) {
+        const first = roundPlayers.shift()!
+        roundPlayers.push(first)
+      }
+
+      // Pemain pertama istirahat
+      const activePlayers = roundPlayers.slice(1)
+
+      // Pair dari ujung-ujung
+      for (let i = 0; i < matchesPerRound; i++) {
+        const leftIdx = i
+        const rightIdx = activePlayers.length - 1 - i
+        if (leftIdx < rightIdx) {
+          const left = activePlayers[leftIdx]
+          const right = activePlayers[rightIdx]
+          const key = [left, right].sort().join("-")
+          const [home, away] = pairToHomeAway.get(key)!
+          matches.push({
+            id: `m${matchId++}`,
+            homeId: home,
+            awayId: away,
+            homeScore: null,
+            awayScore: null,
+          })
+        }
+      }
+    }
+  }
+
+  return matches
+}
+
+// Tambahkan fungsi untuk regenerate jadwal dengan distribusi yang berbeda:
+
+// Tambahkan fungsi untuk menghitung statistik home/away dan tampilkan di UI
+
+function getHomeAwayStats(players: Player[], matches: Match[]): Map<string, { home: number; away: number }> {
+  const stats = new Map<string, { home: number; away: number }>()
+
+  // Initialize stats
+  players.forEach((p) => {
+    stats.set(p.id, { home: 0, away: 0 })
+  })
+
+  // Count home/away appearances
+  matches.forEach((match) => {
+    const homeStats = stats.get(match.homeId)
+    const awayStats = stats.get(match.awayId)
+    if (homeStats) homeStats.home += 1
+    if (awayStats) awayStats.away += 1
+  })
+
+  return stats
 }
 
 function computeStandings(players: Player[], matches: Match[]): StandingRow[] {
@@ -161,6 +351,8 @@ function safeParseScore(v: string): number | null {
   return Math.floor(n)
 }
 
+// Update bagian useTournament untuk menambahkan homeAwayStats
+
 function useTournament() {
   const saved = loadSaved()
   const initialPlayers = saved?.players ?? makePlayers(4)
@@ -194,6 +386,18 @@ function useTournament() {
 
   // Klasemen dan status
   const standings = useMemo(() => computeStandings(players, groupMatches), [players, groupMatches])
+  const homeAwayStats = useMemo(() => getHomeAwayStats(players, groupMatches), [players, groupMatches])
+
+  // Tambahkan fungsi untuk regenerate jadwal dengan distribusi yang berbeda:
+  function regenerateSchedule() {
+    const newMatches = makeGroupMatches(players)
+    setGroupMatches(newMatches)
+    // Reset knockout scores
+    setSf1({ homeScore: null, awayScore: null })
+    setSf2({ homeScore: null, awayScore: null })
+    setFinalMatch({ homeScore: null, awayScore: null })
+  }
+
   const groupDone = allGroupMatchesCompleted(groupMatches)
 
   // Seeds
@@ -319,6 +523,7 @@ function useTournament() {
     players,
     groupMatches,
     standings,
+    homeAwayStats,
     groupDone,
     koFormat,
     setKoFormat,
@@ -340,6 +545,7 @@ function useTournament() {
     updateGroupScore,
     changePlayerCount,
     resetTournament,
+    regenerateSchedule,
   }
 }
 
@@ -359,6 +565,9 @@ export default function Page() {
             <Badge variant="secondary" className="rounded-full px-3 py-1">
               {"Babak Grup → Knockout → Final"}
             </Badge>
+            <Button variant="outline" onClick={t.regenerateSchedule}>
+              {"Acak Jadwal"}
+            </Button>
             <Button variant="outline" onClick={t.resetTournament}>
               {"Reset Turnamen"}
             </Button>
@@ -421,56 +630,70 @@ export default function Page() {
               </section>
 
               {/* Jadwal & Input Skor */}
+
               <section aria-labelledby="group-fixtures">
                 <h2 id="group-fixtures" className="mb-3 text-sm font-medium text-muted-foreground">
                   {"Jadwal Pertandingan Grup"}
                 </h2>
-                <div className="rounded-md border">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-[90px]">{"Match"}</TableHead>
-                        <TableHead>{"Tuan Rumah"}</TableHead>
-                        <TableHead className="w-[110px] text-center">{"Skor"}</TableHead>
-                        <TableHead>{"Tandang"}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {t.groupMatches.map((m, idx) => (
-                        <TableRow key={m.id}>
-                          <TableCell className="text-sm text-muted-foreground">{`G${idx + 1}`}</TableCell>
-                          <TableCell className="font-medium">{t.playerNameById(m.homeId)}</TableCell>
-                          <TableCell>
-                            <div className="flex items-center justify-center gap-2">
-                              <Input
-                                aria-label={`Skor ${t.playerNameById(m.homeId)}`}
-                                inputMode="numeric"
-                                type="number"
-                                min={0}
-                                className="h-9 w-16 text-center"
-                                value={m.homeScore ?? ""}
-                                onChange={(e) => t.updateGroupScore(m.id, "home", e.target.value)}
-                              />
-                              <span className="text-muted-foreground">{"-"}</span>
-                              <Input
-                                aria-label={`Skor ${t.playerNameById(m.awayId)}`}
-                                inputMode="numeric"
-                                type="number"
-                                min={0}
-                                className="h-9 w-16 text-center"
-                                value={m.awayScore ?? ""}
-                                onChange={(e) => t.updateGroupScore(m.id, "away", e.target.value)}
-                              />
-                            </div>
-                          </TableCell>
-                          <TableCell className="font-medium">{t.playerNameById(m.awayId)}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                <div className="space-y-4">
+                  {t.groupMatches.map((match, matchIdx) => {
+                    const roundIdx = Math.floor(matchIdx / (t.players.length / 2))
+                    return (
+                      <div key={match.id} className="space-y-2">
+                        <h3 className="text-sm font-medium text-muted-foreground">{`Matchday ${roundIdx + 1}`}</h3>
+                        <div className="rounded-md border">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="w-[90px]">{"Match"}</TableHead>
+                                <TableHead>{"Tuan Rumah"}</TableHead>
+                                <TableHead className="w-[110px] text-center">{"Skor"}</TableHead>
+                                <TableHead>{"Tandang"}</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              <TableRow key={match.id}>
+                                <TableCell className="text-sm text-muted-foreground">
+                                  {`${roundIdx + 1}.${(matchIdx % (t.players.length / 2)) + 1}`}
+                                </TableCell>
+                                <TableCell className="font-medium">{t.playerNameById(match.homeId)}</TableCell>
+                                <TableCell>
+                                  <div className="flex items-center justify-center gap-2">
+                                    <Input
+                                      aria-label={`Skor ${t.playerNameById(match.homeId)}`}
+                                      inputMode="numeric"
+                                      type="number"
+                                      min={0}
+                                      className="h-9 w-16 text-center"
+                                      value={match.homeScore ?? ""}
+                                      onChange={(e) => t.updateGroupScore(match.id, "home", e.target.value)}
+                                    />
+                                    <span className="text-muted-foreground">{"-"}</span>
+                                    <Input
+                                      aria-label={`Skor ${t.playerNameById(match.awayId)}`}
+                                      inputMode="numeric"
+                                      type="number"
+                                      min={0}
+                                      className="h-9 w-16 text-center"
+                                      value={match.awayScore ?? ""}
+                                      onChange={(e) => t.updateGroupScore(match.id, "away", e.target.value)}
+                                    />
+                                  </div>
+                                </TableCell>
+                                <TableCell className="font-medium">{t.playerNameById(match.awayId)}</TableCell>
+                              </TableRow>
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
+
                 <p className="mt-2 text-xs text-muted-foreground">
-                  {"Skor boleh seri pada babak grup. Poin: Menang 3, Seri 1, Kalah 0."}
+                  {
+                    "Jadwal disusun agar tidak ada pemain yang bermain back-to-back dan distribusi tuan rumah/tandang seimbang. Skor boleh seri pada babak grup. Poin: Menang 3, Seri 1, Kalah 0."
+                  }
                 </p>
               </section>
             </CardContent>
@@ -478,6 +701,8 @@ export default function Page() {
 
           {/* Klasemen & Knockout */}
           <div className="flex flex-col gap-6">
+            {/* Tambahkan tabel Home/Away Balance setelah klasemen */}
+
             {/* Klasemen */}
             <Card>
               <CardHeader className="flex flex-row items-center justify-between">
@@ -530,6 +755,71 @@ export default function Page() {
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
                   {"Urutan klasemen: Poin → Selisih Gol (GD) → Gol Masuk (GF) → Nama."}
+                </p>
+              </CardContent>
+            </Card>
+
+            {/* Home/Away Balance */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <Users className="size-5 text-blue-600" aria-hidden="true" />
+                  <CardTitle>{"Keseimbangan Tuan Rumah/Tandang"}</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>{"Pemain"}</TableHead>
+                        <TableHead className="text-center">{"Target Home"}</TableHead>
+                        <TableHead className="text-center">{"Tuan Rumah"}</TableHead>
+                        <TableHead className="text-center">{"Tandang"}</TableHead>
+                        <TableHead className="text-center">{"Total"}</TableHead>
+                        <TableHead className="text-center">{"Balance"}</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {t.players.map((player, index) => {
+                        const stats = t.homeAwayStats.get(player.id) || { home: 0, away: 0 }
+                        const total = stats.home + stats.away
+                        const balance = stats.home - stats.away
+                        const totalGamesPerPlayer = t.players.length - 1
+                        const targetHomeGames = Math.floor(totalGamesPerPlayer / 2)
+                        const extraHomeGames = totalGamesPerPlayer % 2
+                        const playersNeedingExtra = (extraHomeGames * t.players.length) / 2
+                        const needsExtra = index < playersNeedingExtra
+                        const target = targetHomeGames + (needsExtra ? 1 : 0)
+                        const isBalanced = Math.abs(balance) <= 1 && stats.home === target
+
+                        return (
+                          <TableRow key={player.id}>
+                            <TableCell className="font-medium">{player.name}</TableCell>
+                            <TableCell className="text-center text-muted-foreground">{target}</TableCell>
+                            <TableCell className="text-center">{stats.home}</TableCell>
+                            <TableCell className="text-center">{stats.away}</TableCell>
+                            <TableCell className="text-center">{total}</TableCell>
+                            <TableCell className="text-center">
+                              <span
+                                className={cn(
+                                  "text-sm font-medium",
+                                  isBalanced ? "text-emerald-600" : "text-amber-600",
+                                )}
+                              >
+                                {balance > 0 ? `+${balance}` : balance === 0 ? "0" : `${balance}`}
+                              </span>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {
+                    "Balance menunjukkan selisih antara tuan rumah dan tandang. Nilai 0 atau ±1 menunjukkan distribusi yang seimbang."
+                  }
                 </p>
               </CardContent>
             </Card>
